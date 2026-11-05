@@ -1,0 +1,20 @@
+*.sw?
+Gemfile.lock
+Gemfile.local
+pkg/
+tmp/
+coverage/
+.DS_Store
+.bundle
+*~
+vendor
+.idea/*
+
+.scannerwork/
+
+# yard
+.yardoc
+doc/*
+
+# our custom dictionary pulled from https://github.com/chef/chef_dictionary/
+chef_dictionary.txt

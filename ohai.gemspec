@@ -1,0 +1,37 @@
+# frozen_string_literal: true
+$:.unshift File.expand_path("lib", __dir__)
+require "ohai/version"
+
+Gem::Specification.new do |s|
+  s.name = "ohai"
+  s.version = Ohai::VERSION
+  s.summary = "Ohai profiles your system and emits JSON"
+  s.description = s.summary
+  s.license = "Apache-2.0"
+  s.author = "Adam Jacob"
+  s.email = "adam@chef.io"
+  s.homepage = "https://github.com/chef/ohai/"
+
+  s.required_ruby_version = ">= 3.1"
+
+  s.add_dependency "base64" # For encoding binary data in Ruby 3.4+
+  s.add_dependency "chef-config", ">= 14.12", "< 20"
+  s.add_dependency "chef-utils", ">= 16.0", "< 20"
+  s.add_dependency "ffi", ">= 1.15.5"
+  # ffi-yajl has a stale version in 3.0.0 specifically that is in use. 3.0.1 and higher is ok again
+  s.add_dependency "ffi-yajl", ">= 2.2", "< 4.0", "!= 3.0.0"
+  s.add_dependency "ipaddress"
+  s.add_dependency "mixlib-cli", ">= 1.7.0" # 1.7+ needed to support passing multiple options
+  s.add_dependency "mixlib-config", ">= 2.0", "< 4.0"
+  s.add_dependency "mixlib-log", ">= 2.0.1", "< 4.0"
+  s.add_dependency "mixlib-shellout", ">= 3.3.6", "< 3.5.0"
+  s.add_dependency "plist", "~> 3.1"
+  s.add_dependency "train-core"
+  s.add_dependency "wmi-lite", "~> 1.0"
+
+  s.bindir = "bin"
+  s.executables = %w{ohai}
+
+  s.require_path = "lib"
+  s.files = %w{LICENSE Gemfile} + Dir.glob("*.gemspec") + Dir.glob("lib/**/*")
+end

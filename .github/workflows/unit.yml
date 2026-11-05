@@ -1,0 +1,36 @@
+---
+name: unit
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - 18-stable
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ['ubuntu-latest', 'macos-latest', 'windows-latest']
+        ruby: ['3.1', '3.2', '3.4']
+    name: Unit test on ${{ matrix.os }} with Ruby ${{ matrix.ruby }}
+    runs-on: ${{ matrix.os }}
+    env:
+      RUBYOPT: '--disable-error_highlight'
+      # cookstyle/rubocop (the :lint group) is not needed to run rspec and
+      # can trigger transitive dependency-resolution conflicts (e.g.
+      # unicode-display_width) on some platforms; skip installing it here.
+      BUNDLE_WITHOUT: lint
+    steps:
+      - uses: actions/checkout@v7
+      - name: Setup ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+      - run: bundle exec rake spec

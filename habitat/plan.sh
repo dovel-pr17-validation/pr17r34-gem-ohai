@@ -1,0 +1,153 @@
+export HAB_BLDR_CHANNEL="base-2025"
+export HAB_REFRESH_CHANNEL="base-2025"
+
+# Resolve the repo root from this file's own location (BASH_SOURCE) rather
+# than PLAN_CONTEXT. PLAN_CONTEXT is set by Habitat to the directory it
+# started the build from, which is NOT necessarily the directory this file
+# lives in -- e.g. when habitat/aarch64-linux/plan.sh sources this file,
+# PLAN_CONTEXT is "habitat/aarch64-linux", not "habitat", which breaks any
+# "${PLAN_CONTEXT}/.." reference used here. BASH_SOURCE[0] always points at
+# this file, so it resolves correctly regardless of which plan sourced it.
+OHAI_PLAN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OHAI_REPO_ROOT="$(cd "${OHAI_PLAN_DIR}/.." && pwd)"
+
+ruby_pkg="core/ruby3_4"
+# Derive the Ruby API version (e.g. 3.4.0) from the packaged Ruby's on-disk gem layout
+# rather than executing `ruby -e`. Invoking the hab-provided ruby during the build can
+# silently fail (its runtime library paths aren't set up here), which would leave
+# ruby_gem_version empty and corrupt every GEM_PATH entry that uses it.
+ruby_gem_version="$(basename "$(pkg_path_for "${ruby_pkg}")/lib/ruby/gems/"*)"
+if [[ -z "$ruby_gem_version" ]]; then
+  build_line "WARNING: unable to determine Ruby API version from ${ruby_pkg}; falling back to 3.4.0"
+  ruby_gem_version="3.4.0"
+fi
+pkg_name="ohai"
+pkg_origin="chef"
+pkg_maintainer="The Chef Maintainers <humans@chef.io>"
+pkg_description="The Chef Ohai"
+pkg_license=('Apache-2.0')
+pkg_bin_dirs=(
+  bin
+)
+pkg_build_deps=(
+  core/make
+  core/gcc
+  core/git
+)
+pkg_deps=(${ruby_pkg} core/coreutils)
+
+pkg_svc_user=root
+
+do_setup_environment() {
+  push_runtime_env GEM_PATH "${pkg_prefix}/vendor"
+
+  set_runtime_env APPBUNDLER_ALLOW_RVM "true" # prevent appbundler from clearing out the carefully constructed runtime GEM_PATH
+  set_runtime_env LANG "en_US.UTF-8"
+  set_runtime_env LC_CTYPE "en_US.UTF-8"
+}
+
+do_prepare() {
+  if [[ ! -f /usr/bin/env ]]; then
+    ln -s "$(pkg_interpreter_for core/coreutils bin/env)" /usr/bin/env
+  fi
+}
+
+pkg_version() {
+  cat "$SRC_PATH/VERSION"
+}
+
+do_before() {
+  update_pkg_version
+}
+
+do_unpack() {
+  mkdir -pv "$HAB_CACHE_SRC_PATH/$pkg_dirname"
+  cp -RT "$OHAI_REPO_ROOT" "$HAB_CACHE_SRC_PATH/$pkg_dirname/"
+}
+
+do_build() {
+
+  export GEM_HOME="$pkg_prefix/vendor"
+
+  build_line "Setting GEM_PATH=$GEM_HOME"
+  export GEM_PATH="$GEM_HOME"
+  bundle config --local without integration deploy maintenance development debug
+  bundle config --local jobs 4
+  bundle config --local retry 5
+  bundle config --local silence_root_warning 1
+  bundle install
+  ruby ./cleanup_gem_lockfiles.rb
+  ruby ./post-bundle-install.rb
+  gem build ohai.gemspec
+}
+
+do_install() {
+
+  # Copy NOTICE to the package directory
+  if [[ -f "${OHAI_REPO_ROOT}/NOTICE" ]]; then
+    build_line "Copying NOTICE to package directory"
+    cp "${OHAI_REPO_ROOT}/NOTICE" "$pkg_prefix/"
+  else
+    build_line "Warning: NOTICE not found at ${OHAI_REPO_ROOT}/NOTICE"
+  fi
+
+  export GEM_HOME="$pkg_prefix/vendor"
+
+  build_line "Setting GEM_PATH=$GEM_HOME"
+  export GEM_PATH="$GEM_HOME"
+  gem install ohai-*.gem --no-document
+  ruby ./cleanup_gem_lockfiles.rb
+
+  build_line "** fixing binstub shebangs"
+  fix_interpreter "${pkg_prefix}/vendor/bin/*" "$ruby_pkg" bin/ruby
+
+  build_line "** generating binstubs for ohai with precise version pins"
+  "${pkg_prefix}/vendor/bin/appbundler" . "$pkg_prefix/bin" ohai
+
+  build_line "** patching binstubs to allow running directly"
+  for binstub in "${pkg_prefix}"/bin/*; do
+    sed -i "/require \"rubygems\"/r ${OHAI_REPO_ROOT}/binstub_patch.rb" "$binstub"
+  done
+
+  build_line "** creating wrapper for runtime environment"
+  mkdir -p "$pkg_prefix/libexec"
+  mv "$pkg_prefix/bin/ohai" "$pkg_prefix/libexec/ohai"
+  cat <<EOF > "$pkg_prefix/bin/ohai"
+#!$(pkg_path_for core/bash)/bin/bash
+set -e
+
+export PATH="$(pkg_path_for ${ruby_pkg})/bin:/sbin:/usr/sbin:/usr/local/sbin:/usr/local/bin:/usr/bin:/bin:\$PATH"
+export LD_LIBRARY_PATH="$(pkg_path_for core/libarchive)/lib:\$LD_LIBRARY_PATH"
+export GEM_HOME="$pkg_prefix/vendor"
+# GEM_PATH includes the flat vendor tree, the bundler-nested vendor tree
+# (vendor/ruby/VERSION, where train-core and other runtime deps are installed), the
+# standard user gem dir (~/.gem/ruby/VERSION), and the Chef gem dir
+# (~/.chef/ruby/VERSION/gems) so that both ohai's own runtime deps and plugins installed
+# via 'gem install' or 'chef gem install' are found at runtime.
+export GEM_PATH="$pkg_prefix/vendor:$pkg_prefix/vendor/ruby/${ruby_gem_version}:\${HOME}/.gem/ruby/${ruby_gem_version}:\${HOME}/.chef/ruby/${ruby_gem_version}/gems"
+
+exec $(pkg_path_for ${ruby_pkg})/bin/ruby $pkg_prefix/libexec/ohai "\$@"
+EOF
+  chmod -v 755 "$pkg_prefix/bin/ohai"
+
+  rm -rf "${GEM_PATH:?}/cache/"
+  rm -rf "${GEM_PATH:?}/bundler"
+  rm -rf "${GEM_PATH:?}/doc"
+}
+
+do_after() {
+  build_line "Removing .github directories from vendored gems..."
+  find "$pkg_prefix/vendor/gems" -type d -name ".github" \
+  | while read github_dir; do rm -rf "$github_dir"; done
+}
+
+do_strip() {
+  return 0
+}
+
+do_end() {
+  if [[ "$(readlink /usr/bin/env)" = "$(pkg_interpreter_for core/coreutils bin/env)" ]]; then
+    build_line "Removing the symlink we created for '/usr/bin/env'"
+    rm /usr/bin/env
+  fi
+}
